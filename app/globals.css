@@ -1,26 +1,117 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: 'GalanoGrotesque';
+  src: local('GalanoGrotesque'), local('Galano Grotesque'),
+       url('https://fonts.cdnfonts.com/s/72856/GalanoGrotesqueRegular.woff') format('woff'),
+       url('https://fonts.cdnfonts.com/s/72856/GalanoGrotesqueRegular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'GalanoGrotesque';
+  src: local('GalanoGrotesque-Medium'), local('Galano Grotesque Medium'),
+       url('https://fonts.cdnfonts.com/s/72856/GalanoGrotesqueMedium.woff') format('woff'),
+       url('https://fonts.cdnfonts.com/s/72856/GalanoGrotesqueMedium.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'GalanoGrotesque';
+  src: local('GalanoGrotesque-Bold'), local('Galano Grotesque Bold'),
+       url('https://fonts.cdnfonts.com/s/72856/GalanoGrotesqueBold.woff') format('woff'),
+       url('https://fonts.cdnfonts.com/s/72856/GalanoGrotesqueBold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --font-sans: 'GalanoGrotesque', sans-serif;
+  --font-family: 'GalanoGrotesque', sans-serif;
+  --color-primary: #146eb4;
+  --color-primary-hover: #0e5289;
+  --color-blue-50: #f0f7fc;
+  --color-blue-100: #e0eff9;
+  --color-blue-200: #b9dcf2;
+  --color-blue-300: #88c1e9;
+  --color-blue-400: #4fa2dc;
+  --color-blue-500: #1d82d2;
+  --color-blue-600: #146eb4;
+  --color-blue-700: #0e5289;
+  --color-blue-800: #0b3f6a;
+  --color-blue-900: #082e4e;
+}
+
 :root {
+  --font-family: 'GalanoGrotesque', sans-serif;
+  --font-family-base: 'GalanoGrotesque', sans-serif;
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #0f172a;
+  --primary: #146eb4;
+  --primary-hover: #0e5289;
+  --accent: #f59e0b;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+*, *::before, *::after, html, body, button, input, textarea, select {
+  font-family: var(--font-family) !important;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Glassmorphism */
+.glass {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.glass-dark {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.gradient-hero {
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
+}
+
+.gradient-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 252, 0.95) 100%);
+}
+
+.gradient-gold {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, #146eb4 0%, #0e5289 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
