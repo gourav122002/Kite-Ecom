@@ -147,6 +147,7 @@ model Order {
   guestEmail     String?
   guestName      String?
   guestPhone     String?
+  guestToken     String?       @unique
   addressId      String?
   address        Address?      @relation(fields: [addressId], references: [id], onDelete: SetNull)
   shippingAddress String       // JSON string of shipping snapshot

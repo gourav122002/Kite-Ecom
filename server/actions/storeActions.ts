@@ -99,7 +99,9 @@ export async function addToCartAction({
       });
     }
 
-    revalidatePath("/cart");
+    try {
+      revalidatePath("/cart");
+    } catch {}
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };
@@ -147,7 +149,9 @@ export async function updateCartItemQuantityAction({
       });
     }
 
-    revalidatePath("/cart");
+    try {
+      revalidatePath("/cart");
+    } catch {}
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };

@@ -13,22 +13,29 @@ export const registerSchema = z.object({
 });
 
 export const addressSchema = z.object({
-  name: z.string().min(2, "Name is required"),
-  phone: z.string().min(10, "Valid 10-digit phone number is required"),
-  street: z.string().min(5, "Street address is required"),
+  name: z.string().min(2, "Full name is required"),
+  phone: z.string().min(10, "Valid 10-digit mobile number is required"),
+  street: z.string().min(5, "Complete street address is required"),
   city: z.string().min(2, "City is required"),
   state: z.string().min(2, "State is required"),
-  postalCode: z.string().min(4, "Postal / PIN code is required"),
+  postalCode: z.string().min(4, "PIN code is required"),
   country: z.string().default("India"),
 });
 
 export const checkoutSchema = z.object({
-  email: z.string().email("Valid email is required"),
-  phone: z.string().min(10, "Valid phone number is required"),
+  email: z
+    .string()
+    .email("Invalid email address")
+    .optional()
+    .or(z.literal(""))
+    .nullable(),
+  phone: z.string().min(10, "Valid 10-digit mobile number is required"),
   shippingAddress: addressSchema,
-  couponCode: z.string().optional(),
-  notes: z.string().optional(),
+  couponCode: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
   paymentMethod: z.enum(["COD", "RAZORPAY"]).default("COD"),
+  guestId: z.string().optional().nullable(),
+  idempotencyKey: z.string().optional().nullable(),
 });
 
 export const productSchema = z.object({

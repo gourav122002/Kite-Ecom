@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
 import { formatCurrency } from "@/lib/utils";
 import { OrderSuccessConfetti } from "@/components/store/OrderSuccessConfetti";
 import {
@@ -10,6 +11,7 @@ import {
   ArrowRight,
   ShieldCheck,
   Receipt,
+  Lock,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -19,10 +21,15 @@ interface OrderPageProps {
   params: Promise<{
     id: string;
   }>;
+  searchParams?: Promise<{
+    token?: string;
+  }>;
 }
 
-export default async function OrderDetailPage({ params }: OrderPageProps) {
+export default async function OrderDetailPage({ params, searchParams }: OrderPageProps) {
   const { id } = await params;
+  const search = searchParams ? await searchParams : {};
+  const token = search?.token;
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -42,12 +49,36 @@ export default async function OrderDetailPage({ params }: OrderPageProps) {
     notFound();
   }
 
+  const currentUser = await getCurrentUser();
+  const isOwner = !!(currentUser && order.userId && currentUser.id === order.userId);
+  const hasValidGuestToken = !!(token && order.guestToken && token === order.guestToken);
+  const isStaffOrAdmin = !!(currentUser && (currentUser.role === "ADMIN" || currentUser.role === "STAFF"));
+  const isAuthorized = isOwner || hasValidGuestToken || isStaffOrAdmin;
+
   let addressObj: any = {};
   try {
     addressObj = JSON.parse(order.shippingAddress);
   } catch {}
 
   const isConfirmed = order.orderStatus !== "CANCELLED";
+
+  // Mask sensitive info for privacy if accessed without token or login
+  const displayName = isAuthorized
+    ? addressObj.name || order.guestName || "Customer"
+    : (order.guestName || "Customer")
+        .split(" ")
+        .map((part) => (part.length > 1 ? part[0] + "*".repeat(part.length - 1) : part))
+        .join(" ");
+
+  const displayPhone = isAuthorized
+    ? addressObj.phone || order.guestPhone || ""
+    : order.guestPhone
+    ? `+91 ******${order.guestPhone.slice(-4)}`
+    : "Protected";
+
+  const displayStreet = isAuthorized
+    ? addressObj.street
+    : "Street address hidden for privacy";
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6 lg:px-8 space-y-8">
@@ -69,7 +100,7 @@ export default async function OrderDetailPage({ params }: OrderPageProps) {
             <p className="text-xs text-slate-600 mt-1">
               {order.payments[0]?.provider === "COD"
                 ? `Your Cash on Delivery order is confirmed and sent to dispatch.`
-                : `An email confirmation has been dispatched to ${order.guestEmail || "your registered email"}.`}
+                : `Payment confirmed. Dispatched to ${isAuthorized ? order.guestEmail : "your contact email"}.`}
             </p>
           </div>
         </div>
@@ -81,6 +112,23 @@ export default async function OrderDetailPage({ params }: OrderPageProps) {
           </span>
         </div>
       </div>
+
+      {!isAuthorized && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-xs text-amber-800 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <Lock className="h-4 w-4 text-amber-600 flex-shrink-0" />
+            <span>
+              Customer address and phone number are hidden for privacy.
+            </span>
+          </div>
+          <Link
+            href="/track"
+            className="rounded-lg bg-amber-600 px-3 py-1 text-white font-bold hover:bg-amber-700 transition"
+          >
+            Verify with Mobile Number
+          </Link>
+        </div>
+      )}
 
       {/* 5-Step Fulfillment Status Timeline Tracker (Amazon/Ecommerce style matching user screenshot) */}
       <div className="rounded-3xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xs space-y-6">
@@ -347,7 +395,7 @@ export default async function OrderDetailPage({ params }: OrderPageProps) {
               <span>{formatCurrency(order.tax)}</span>
             </div>
             <div className="flex justify-between border-t border-slate-200 pt-3 text-base font-black text-slate-900">
-              <span>Total Paid</span>
+              <span>{order.payments[0]?.provider === "COD" ? "Total Payable (COD)" : "Total Paid"}</span>
               <span className="text-xl text-blue-600">{formatCurrency(order.total)}</span>
             </div>
           </div>
@@ -362,13 +410,13 @@ export default async function OrderDetailPage({ params }: OrderPageProps) {
               <span>Shipping Address</span>
             </h3>
             <div className="text-slate-600 space-y-1">
-              <p className="font-bold text-slate-900">{addressObj.name || order.guestName}</p>
-              <p>{addressObj.street}</p>
+              <p className="font-bold text-slate-900">{displayName}</p>
+              <p>{displayStreet}</p>
               <p>
-                {addressObj.city}, {addressObj.state} - {addressObj.postalCode}
+                {addressObj.city || "City"}, {addressObj.state || "State"} - {addressObj.postalCode || ""}
               </p>
               <p>{addressObj.country || "India"}</p>
-              <p className="pt-1 text-slate-500">Phone: {addressObj.phone || order.guestPhone}</p>
+              <p className="pt-1 text-slate-500">Phone: {displayPhone}</p>
             </div>
           </div>
 

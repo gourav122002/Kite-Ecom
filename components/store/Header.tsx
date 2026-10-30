@@ -16,6 +16,7 @@ import {
   LogOut,
   SlidersHorizontal,
   Wind,
+  Truck,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -199,6 +200,13 @@ export function Header() {
           <Link href="/blog" className="hover:text-blue-600 transition">
             Flight Guides
           </Link>
+          <Link
+            href="/track"
+            className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-bold transition"
+          >
+            <Truck className="h-4 w-4" />
+            <span>Track Order</span>
+          </Link>
         </nav>
 
         {/* Right: Actions (Account, Cart) */}
@@ -333,6 +341,14 @@ export function Header() {
               className="rounded-lg px-3 py-2 hover:bg-slate-50"
             >
               Kite Flight Guides
+            </Link>
+            <Link
+              href="/track"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-blue-700 font-bold"
+            >
+              <Truck className="h-4 w-4" />
+              <span>Track Your Order</span>
             </Link>
             {mounted && user?.role === "ADMIN" && (
               <Link

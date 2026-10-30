@@ -96,6 +96,11 @@ export function Footer() {
                   My Shopping Cart
                 </Link>
               </li>
+              <li>
+                <Link href="/track" className="text-blue-400 hover:text-blue-300 font-semibold transition">
+                  Track Your Order
+                </Link>
+              </li>
             </ul>
           </div>
 

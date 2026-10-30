@@ -1,5 +1,6 @@
 "use server";
 
+import crypto from "crypto";
 import { getCurrentUser } from "@/lib/auth";
 import { calculateCartTotals } from "@/lib/cart";
 import { prisma } from "@/lib/prisma";
@@ -9,7 +10,7 @@ import { checkoutSchema } from "@/validations";
 import { revalidatePath } from "next/cache";
 
 export async function createCheckoutOrderAction(payload: {
-  email: string;
+  email?: string | null;
   phone: string;
   shippingAddress: {
     name: string;
@@ -20,11 +21,12 @@ export async function createCheckoutOrderAction(payload: {
     postalCode: string;
     country: string;
   };
-  couponCode?: string;
-  notes?: string;
+  couponCode?: string | null;
+  notes?: string | null;
   paymentMethod?: "COD" | "RAZORPAY";
   items: { productId: string; variantId?: string | null; quantity: number }[];
-  guestId?: string;
+  guestId?: string | null;
+  idempotencyKey?: string | null;
 }) {
   try {
     const validated = checkoutSchema.safeParse(payload);
@@ -33,33 +35,101 @@ export async function createCheckoutOrderAction(payload: {
     }
 
     if (!payload.items || payload.items.length === 0) {
-      return { success: false, error: "Your cart is empty" };
+      return { success: false, error: "Your cart is empty. Please add items to checkout." };
+    }
+
+    const cleanPhone = payload.phone.replace(/\D/g, "");
+    if (cleanPhone.length < 10) {
+      return { success: false, error: "Please enter a valid 10-digit mobile number." };
     }
 
     const user = await getCurrentUser();
     const paymentMethod = payload.paymentMethod || "COD";
 
-    // 1. Recalculate totals on the server from database data
+    // 1. Recalculate totals on server from live product data (never trust client)
     const calculation = await calculateCartTotals(
       payload.items,
-      payload.couponCode
+      payload.couponCode || undefined
     );
 
     if (calculation.items.length === 0) {
-      return { success: false, error: "No available products in cart" };
+      return { success: false, error: "No available products in cart." };
     }
 
-    const orderNumber = generateOrderNumber();
+    // 2. Execute order creation in an atomic database transaction
+    const transactionResult = await prisma.$transaction(async (tx) => {
+      // Step A: Stock & availability verification
+      for (const item of calculation.items) {
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+          select: { id: true, name: true, stock: true, status: true },
+        });
 
-    // 2. If Cash on Delivery (COD)
-    if (paymentMethod === "COD") {
-      const order = await prisma.order.create({
+        if (!product || product.status !== "ACTIVE") {
+          throw new Error(`Product "${item.name}" is currently not available.`);
+        }
+
+        if (product.stock < item.quantity) {
+          throw new Error(
+            `Insufficient stock for "${product.name}". Only ${product.stock} unit(s) available.`
+          );
+        }
+
+        if (item.variantId) {
+          const variant = await tx.productVariant.findUnique({
+            where: { id: item.variantId },
+            select: { id: true, name: true, stock: true },
+          });
+
+          if (!variant || variant.stock < item.quantity) {
+            throw new Error(
+              `Insufficient stock for "${item.name}". Only ${variant?.stock ?? 0} unit(s) available.`
+            );
+          }
+        }
+      }
+
+      // Step B: Prevent duplicate orders caused by repeated button clicks
+      const fifteenSecondsAgo = new Date(Date.now() - 15 * 1000);
+      const recentOrder = await tx.order.findFirst({
+        where: {
+          guestPhone: cleanPhone,
+          total: calculation.total,
+          createdAt: { gte: fifteenSecondsAgo },
+        },
+        select: {
+          id: true,
+          orderNumber: true,
+          guestToken: true,
+          total: true,
+        },
+      });
+
+      if (recentOrder) {
+        return {
+          order: recentOrder,
+          isDuplicate: true,
+          isCod: paymentMethod === "COD",
+        };
+      }
+
+      // Step C: Generate unique order number and cryptographically secure guestToken
+      const orderNumber = generateOrderNumber();
+      const guestToken = crypto.randomBytes(24).toString("hex");
+
+      // Normalize optional email (generate fallback if guest provided none)
+      const customerEmail =
+        payload.email?.trim() || `${cleanPhone}@monokite.store`;
+
+      // Step D: Create the Order
+      const order = await tx.order.create({
         data: {
           orderNumber,
           userId: user?.id || null,
-          guestEmail: payload.email,
-          guestName: payload.shippingAddress.name,
-          guestPhone: payload.phone,
+          guestToken,
+          guestEmail: customerEmail,
+          guestName: payload.shippingAddress.name.trim(),
+          guestPhone: cleanPhone,
           shippingAddress: JSON.stringify(payload.shippingAddress),
           subtotal: calculation.subtotal,
           discount: calculation.discount,
@@ -67,9 +137,9 @@ export async function createCheckoutOrderAction(payload: {
           shippingFee: calculation.shippingFee,
           total: calculation.total,
           orderStatus: "CONFIRMED",
-          paymentStatus: "PENDING", // Pay on delivery
+          paymentStatus: "PENDING",
           couponCode: calculation.couponCode,
-          notes: payload.notes,
+          notes: payload.notes || null,
           items: {
             create: calculation.items.map((item) => ({
               productId: item.productId,
@@ -84,96 +154,140 @@ export async function createCheckoutOrderAction(payload: {
         },
       });
 
-      // Create COD Payment record
-      await prisma.payment.create({
-        data: {
-          orderId: order.id,
-          amount: calculation.total,
-          currency: "INR",
-          provider: "COD",
-          status: "PENDING",
-        },
-      });
-
-      // Deduct stock and record inventory logs
-      for (const item of calculation.items) {
-        await prisma.product.update({
-          where: { id: item.productId },
+      // Step E: Create Payment & handle stock for COD or Razorpay
+      if (paymentMethod === "COD") {
+        await tx.payment.create({
           data: {
-            stock: { decrement: item.quantity },
+            orderId: order.id,
+            amount: calculation.total,
+            currency: "INR",
+            provider: "COD",
+            status: "PENDING",
           },
         });
 
-        await prisma.inventory.create({
-          data: {
-            productId: item.productId,
-            change: -item.quantity,
-            reason: "PURCHASE",
-            referenceId: order.id,
-          },
-        });
+        // Deduct inventory stock
+        for (const item of calculation.items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stock: { decrement: item.quantity } },
+          });
 
-        if (item.variantId) {
-          await prisma.productVariant.update({
-            where: { id: item.variantId },
+          await tx.inventory.create({
             data: {
-              stock: { decrement: item.quantity },
+              productId: item.productId,
+              change: -item.quantity,
+              reason: "PURCHASE",
+              referenceId: order.id,
             },
           });
-        }
-      }
 
-      // If coupon used, increment coupon usage
-      if (order.couponCode) {
-        await prisma.coupon.update({
-          where: { code: order.couponCode },
-          data: { usageCount: { increment: 1 } },
-        });
-        if (order.userId) {
-          const coupon = await prisma.coupon.findUnique({
-            where: { code: order.couponCode },
-          });
-          if (coupon) {
-            await prisma.couponUsage.create({
-              data: {
-                couponId: coupon.id,
-                userId: order.userId,
-                orderId: order.id,
-              },
+          if (item.variantId) {
+            await tx.productVariant.update({
+              where: { id: item.variantId },
+              data: { stock: { decrement: item.quantity } },
             });
           }
         }
-      }
 
-      // Clear user cart if exists
-      if (order.userId) {
-        await prisma.cartItem.deleteMany({
-          where: { cart: { userId: order.userId } },
-        });
-      }
+        // Increment coupon count if applied
+        if (order.couponCode) {
+          await tx.coupon.update({
+            where: { code: order.couponCode },
+            data: { usageCount: { increment: 1 } },
+          });
 
-      revalidatePath(`/orders/${order.id}`);
-      revalidatePath("/admin/orders");
+          if (order.userId) {
+            const coupon = await tx.coupon.findUnique({
+              where: { code: order.couponCode },
+            });
+            if (coupon) {
+              await tx.couponUsage.create({
+                data: {
+                  couponId: coupon.id,
+                  userId: order.userId,
+                  orderId: order.id,
+                },
+              });
+            }
+          }
+        }
 
-      return {
-        success: true,
-        isCod: true,
-        order: {
-          id: order.id,
-          orderNumber: order.orderNumber,
-          total: calculation.total,
+        // Clear user cart or guest cart ONLY on successful order creation
+        if (order.userId) {
+          await tx.cartItem.deleteMany({
+            where: { cart: { userId: order.userId } },
+          });
+        }
+        if (payload.guestId) {
+          await tx.cartItem.deleteMany({
+            where: { cart: { guestId: payload.guestId } },
+          });
+        }
+
+        return {
+          order: {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            total: calculation.total,
+            guestToken: order.guestToken,
+          },
+          isDuplicate: false,
+          isCod: true,
+        };
+      } else {
+        // Step F: Online Payment Gateway (Razorpay)
+        const rzpOrder = await createRazorpayOrder({
+          amount: calculation.total,
           currency: "INR",
-        },
-      };
-    }
+          receipt: order.orderNumber,
+          notes: {
+            orderId: order.id,
+            phone: cleanPhone,
+          },
+        });
 
-    // 3. Online Payment Gateway (Razorpay) - currently on hold
+        await tx.payment.create({
+          data: {
+            orderId: order.id,
+            amount: calculation.total,
+            currency: "INR",
+            provider: "RAZORPAY",
+            razorpayOrderId: rzpOrder.id,
+            status: "PENDING",
+          },
+        });
+
+        return {
+          order: {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            total: calculation.total,
+            guestToken: order.guestToken,
+          },
+          isDuplicate: false,
+          isCod: false,
+          razorpayOrder: rzpOrder,
+        };
+      }
+    });
+
+    try {
+      revalidatePath(`/orders/${transactionResult.order.id}`);
+      revalidatePath("/admin/orders");
+    } catch {}
+
     return {
-      success: false,
-      error: "Online payment gateway is temporarily on hold. Please choose Cash on Delivery (COD).",
+      success: true,
+      isCod: transactionResult.isCod,
+      order: transactionResult.order,
+      razorpayOrder: (transactionResult as any).razorpayOrder || null,
     };
   } catch (error: any) {
-    return { success: false, error: error.message || "Failed to initiate checkout" };
+    return {
+      success: false,
+      error: error.message || "Failed to place order. Please try again.",
+    };
   }
 }
 
@@ -182,11 +296,13 @@ export async function verifyAndConfirmPaymentAction({
   razorpayOrderId,
   razorpayPaymentId,
   razorpaySignature,
+  guestId,
 }: {
   orderId: string;
   razorpayOrderId: string;
   razorpayPaymentId: string;
   razorpaySignature: string;
+  guestId?: string | null;
 }) {
   try {
     const isValid = verifyRazorpaySignature({
@@ -199,90 +315,162 @@ export async function verifyAndConfirmPaymentAction({
       return { success: false, error: "Invalid payment signature verification failed" };
     }
 
-    // Update payment record
-    await prisma.payment.updateMany({
-      where: { orderId, razorpayOrderId },
-      data: {
-        razorpayPaymentId,
-        razorpaySignature,
-        status: "PAID",
-      },
-    });
-
-    // Update Order to CONFIRMED & Payment to PAID
-    const order = await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        orderStatus: "CONFIRMED",
-        paymentStatus: "PAID",
-      },
-      include: {
-        items: true,
-      },
-    });
-
-    // Deduct stock and record inventory log
-    for (const item of order.items) {
-      await prisma.product.update({
-        where: { id: item.productId },
+    // Process payment confirmation in transaction
+    const updatedOrder = await prisma.$transaction(async (tx) => {
+      await tx.payment.updateMany({
+        where: { orderId, razorpayOrderId },
         data: {
-          stock: { decrement: item.quantity },
+          razorpayPaymentId,
+          razorpaySignature,
+          status: "PAID",
         },
       });
 
-      await prisma.inventory.create({
+      const order = await tx.order.update({
+        where: { id: orderId },
         data: {
-          productId: item.productId,
-          change: -item.quantity,
-          reason: "PURCHASE",
-          referenceId: order.id,
+          orderStatus: "CONFIRMED",
+          paymentStatus: "PAID",
         },
+        include: { items: true },
       });
 
-      if (item.variantId) {
-        await prisma.productVariant.update({
-          where: { id: item.variantId },
+      // Deduct stock and log inventory
+      for (const item of order.items) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { stock: { decrement: item.quantity } },
+        });
+
+        await tx.inventory.create({
           data: {
-            stock: { decrement: item.quantity },
+            productId: item.productId,
+            change: -item.quantity,
+            reason: "PURCHASE",
+            referenceId: order.id,
           },
         });
-      }
-    }
 
-    // If coupon used, increment coupon usage
-    if (order.couponCode) {
-      await prisma.coupon.update({
-        where: { code: order.couponCode },
-        data: { usageCount: { increment: 1 } },
-      });
-      if (order.userId) {
-        const coupon = await prisma.coupon.findUnique({
-          where: { code: order.couponCode },
-        });
-        if (coupon) {
-          await prisma.couponUsage.create({
-            data: {
-              couponId: coupon.id,
-              userId: order.userId,
-              orderId: order.id,
-            },
+        if (item.variantId) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: { stock: { decrement: item.quantity } },
           });
         }
       }
-    }
 
-    // Clear user cart if exists
-    if (order.userId) {
-      await prisma.cartItem.deleteMany({
-        where: { cart: { userId: order.userId } },
-      });
-    }
+      // Handle coupon count
+      if (order.couponCode) {
+        await tx.coupon.update({
+          where: { code: order.couponCode },
+          data: { usageCount: { increment: 1 } },
+        });
+        if (order.userId) {
+          const coupon = await tx.coupon.findUnique({
+            where: { code: order.couponCode },
+          });
+          if (coupon) {
+            await tx.couponUsage.create({
+              data: {
+                couponId: coupon.id,
+                userId: order.userId,
+                orderId: order.id,
+              },
+            });
+          }
+        }
+      }
 
-    revalidatePath(`/orders/${order.id}`);
-    revalidatePath("/admin/orders");
-    return { success: true, orderId: order.id, orderNumber: order.orderNumber };
+      // Clear user or guest cart
+      if (order.userId) {
+        await tx.cartItem.deleteMany({
+          where: { cart: { userId: order.userId } },
+        });
+      }
+      if (guestId) {
+        await tx.cartItem.deleteMany({
+          where: { cart: { guestId } },
+        });
+      }
+
+      return order;
+    });
+
+    try {
+      revalidatePath(`/orders/${updatedOrder.id}`);
+      revalidatePath("/admin/orders");
+    } catch {}
+
+    return {
+      success: true,
+      orderId: updatedOrder.id,
+      orderNumber: updatedOrder.orderNumber,
+      guestToken: updatedOrder.guestToken,
+    };
   } catch (error: any) {
     return { success: false, error: error.message || "Failed to confirm payment" };
+  }
+}
+
+export async function trackOrderAction({
+  orderNumber,
+  phone,
+}: {
+  orderNumber: string;
+  phone: string;
+}) {
+  try {
+    const cleanNum = orderNumber.trim();
+    const cleanPhone = phone.replace(/\D/g, "");
+
+    if (!cleanNum) {
+      return { success: false, error: "Please enter your Order Reference Number." };
+    }
+    if (cleanPhone.length < 10) {
+      return { success: false, error: "Please enter your 10-digit mobile number." };
+    }
+
+    const order = await prisma.order.findFirst({
+      where: {
+        OR: [
+          { orderNumber: { equals: cleanNum } },
+          { id: { equals: cleanNum } },
+        ],
+        guestPhone: { contains: cleanPhone.slice(-10) },
+      },
+      select: {
+        id: true,
+        orderNumber: true,
+        guestToken: true,
+        orderStatus: true,
+        paymentStatus: true,
+        total: true,
+        createdAt: true,
+        items: {
+          select: {
+            name: true,
+            quantity: true,
+            price: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      return {
+        success: false,
+        error: "No matching order found for this Order Number and Mobile Number. Please check and try again.",
+      };
+    }
+
+    return {
+      success: true,
+      orderId: order.id,
+      guestToken: order.guestToken,
+      order,
+    };
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to search order." };
   }
 }
 

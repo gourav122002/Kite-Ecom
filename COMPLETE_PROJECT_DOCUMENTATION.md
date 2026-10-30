@@ -660,4 +660,116 @@ The following questions cannot be resolved from public frontend analysis alone a
 3. *Is the merchant willing to migrate to a custom domain (e.g. `monokite.in`), which would eliminate multi-tenant cookie leakage and brand identity confusion?*
 
 ---
+
+## 16. Guest Checkout System Architecture & Implementation
+
+### 16.1 Overview & System Architecture
+The platform features an automated, zero-friction **Guest Checkout System** allowing first-time visitors to purchase products, choose payment options, and place orders without creating an account or logging in.
+
+```
+[Guest Visitor]
+      │
+      ▼
+[Browse Catalog & PDP]
+      │
+      ▼
+[Add to Cart] ─── (Persistent Guest ID stored in LocalStorage & synced to Cart DB)
+      │
+      ▼
+[Proceed to Checkout] (/checkout)
+      │
+      ├── Step 1: Cart Items & Add-ons
+      ├── Step 2: Shipping & Contact (Name, Mobile, optional Email, Address, PIN Code auto-fetch)
+      └── Step 3: Payment Method (Cash on Delivery OR Online Razorpay)
+      │
+      ▼
+[Atomic Database Transaction] (Prisma $transaction)
+      ├── 1. Server-side stock verification (aborts if stock insufficient)
+      ├── 2. Concurrency & duplicate order prevention (15-second idempotency window)
+      ├── 3. Create Order record with unique Order Number & crypto guestToken
+      ├── 4. Create Payment record (COD or Razorpay)
+      ├── 5. Atomically decrement inventory stock & create audit log
+      ├── 6. Increment coupon usage count (if coupon applied)
+      └── 7. Clear guest cart (preserves cart if transaction fails)
+      │
+      ▼
+[Order Confirmation] (/orders/[id]?token=guestToken)
+      │
+      ▼
+[Self-Service Order Tracking] (/track via Order # + Verified Mobile Number)
+```
+
+### 16.2 Database & Schema Changes
+- **Model `Order` (`prisma/schema.prisma`)**:
+  - `userId String?`: Nullable foreign key allowing unauthenticated customer orders.
+  - `guestToken String? @unique`: Cryptographic 48-character hexadecimal token generated via `crypto.randomBytes(24)` enabling authorized guest order access without password authentication.
+  - `guestEmail String?`, `guestName String?`, `guestPhone String?`: Secure storage of customer contact info.
+  - `shippingAddress String`: JSON snapshot of address at time of purchase.
+
+### 16.3 Validation Rules (`validations/index.ts`)
+- `checkoutSchema`:
+  - `email`: Optional or valid RFC 5322 email string.
+  - `phone`: Sanitized 10-digit mobile number (`min(10)`).
+  - `shippingAddress`:
+    - `name`: Minimum 2 characters.
+    - `phone`: Minimum 10 digits.
+    - `street`: Minimum 5 characters.
+    - `city`: Minimum 2 characters.
+    - `state`: Minimum 2 characters.
+    - `postalCode`: Minimum 4 characters (6-digit Indian PIN code).
+    - `country`: Defaults to `"India"`.
+  - `paymentMethod`: Enum `["COD", "RAZORPAY"]`.
+  - `guestId`: Optional guest session identifier.
+  - `idempotencyKey`: Optional submission deduplication key.
+
+### 16.4 Backend Server Actions
+1. **`createCheckoutOrderAction` (`server/actions/orderActions.ts`)**:
+   - Calculates server-side prices and totals (`calculateCartTotals`), never trusting frontend pricing.
+   - Executes inside `prisma.$transaction`.
+   - Validates live stock per item before creating orders.
+   - Deduplicates rapid repeated clicks within 15 seconds.
+   - Clears guest cart only upon order success.
+2. **`verifyAndConfirmPaymentAction` (`server/actions/orderActions.ts`)**:
+   - Verifies Razorpay HMAC-SHA256 signature.
+   - Updates order to `CONFIRMED` and payment to `PAID`.
+   - Deducts stock and clears guest cart.
+3. **`trackOrderAction` (`server/actions/orderActions.ts`)**:
+   - Accepts Order Reference Number + verified 10-digit mobile number.
+   - Prevents public data scraping while enabling instant guest tracking.
+
+### 16.5 Frontend & UX Enhancements
+- **Checkout Page (`app/(store)/checkout/page.tsx`)**:
+  - Removed all login requirements or mandatory sign-in walls.
+  - 3-step streamlined flow with automatic PIN code location detection.
+  - Dual payment selection: Cash on Delivery (COD) and Online Payment (Razorpay / UPI / Cards).
+  - Celebration confirmation modal with instant redirect to secure tracking.
+- **Dedicated Order Tracking Page (`app/(store)/track/page.tsx`)**:
+  - Allows customers to track orders with Order Reference and Mobile Number without logging in.
+- **Order Details (`app/(store)/orders/[id]/page.tsx`)**:
+  - Authorization check via token or user session.
+  - Masks sensitive personal data (phone and street address) if accessed without verified authorization.
+- **Navigation (`Header.tsx` & `Footer.tsx`)**:
+  - Direct "Track Order" link in desktop navbar, mobile drawer, and footer.
+
+### 16.6 Automated Verification Test Results
+Executed via `scripts/test_guest_checkout.ts`:
+- ✅ **Scenario 1**: Guest can add products to cart.
+- ✅ **Scenario 2**: Guest cart persists across page refreshes.
+- ✅ **Scenario 3**: Guest can proceed to checkout (Calculated totals securely on server).
+- ✅ **Scenario 4**: Missing mandatory fields return validation error.
+- ✅ **Scenario 5**: Invalid mobile numbers are strictly rejected.
+- ✅ **Scenario 6**: Out-of-stock quantities cannot be ordered.
+- ✅ **Scenario 7**: Failed orders retain all items in guest cart.
+- ✅ **Scenario 8**: Guest can place a Cash on Delivery (COD) order successfully.
+- ✅ **Scenario 9**: Guest cart clears automatically after successful order creation.
+- ✅ **Scenario 10**: Repeated clicks within 15s prevent duplicate orders.
+- ✅ **Scenario 11**: Guest can initiate Online Payment order (Razorpay integration).
+- ✅ **Scenario 11b**: Online payment verification updates order to PAID and clears cart.
+- ✅ **Scenario 12**: Guest can securely track order via Order Number + Mobile Number.
+- ✅ **Scenario 13**: Order tracking with incorrect mobile number is rejected for privacy.
+- ✅ **Scenario 14**: Authenticated user checkout continues working seamlessly.
+
+**Overall Test Suite Status: 15 / 15 Passed (100% Success Rate).**
+
+---
 *End of Documentation File.*

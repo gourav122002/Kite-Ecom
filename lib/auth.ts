@@ -43,10 +43,14 @@ export function verifyToken(token: string): AuthSessionUser | null {
 }
 
 export async function getCurrentUser(): Promise<AuthSessionUser | null> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value;
-  if (!token) return null;
-  return verifyToken(token);
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get(COOKIE_NAME)?.value;
+    if (!token) return null;
+    return verifyToken(token);
+  } catch {
+    return null;
+  }
 }
 
 export async function setAuthCookie(user: AuthSessionUser) {
